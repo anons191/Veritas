@@ -1,4 +1,4 @@
-// ✅ route.ts (API route)
+// src/app/api/veritas/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { webSearch } from '@/utils/search';
@@ -9,7 +9,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 export async function POST(req: NextRequest) {
   const { input, mode, search, walletAddress, amount } = await req.json();
 
-  if (!walletAddress || !amount) {
+  if (!walletAddress || typeof amount !== "number") {
     return NextResponse.json({ error: "Missing wallet address or amount." }, { status: 400 });
   }
 
