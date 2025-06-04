@@ -9,47 +9,44 @@ import {
   createAssociatedTokenAccountInstruction,
   createTransferInstruction,
   getAssociatedTokenAddress,
-  getAccount,
   getMint,
 } from "@solana/spl-token";
 
 const RPC = "https://api.devnet.solana.com";
 const connection = new Connection(RPC, "confirmed");
 
-const MINT        = new PublicKey(process.env.VERITAS_TOKEN_MINT!);
-const FEE_WALLET  = new PublicKey(process.env.VERITAS_FEE_WALLET!);
+const MINT       = new PublicKey(process.env.VERITAS_TOKEN_MINT!);
+const FEE_WALLET = new PublicKey(process.env.VERITAS_FEE_WALLET!);
 
 export async function POST(req: NextRequest) {
   try {
-    const { walletAddress } = await req.json();
-    if (!walletAddress) {
-      return NextResponse.json({ error: "Missing wallet address" }, { status: 400 });
+    const { walletAddress, amount } = await req.json();
+    if (!walletAddress || typeof amount !== "number") {
+      return NextResponse.json({ error: "Missing wallet address or amount" }, { status: 400 });
     }
 
-    // 0. Actor addresses
-    const user      = new PublicKey(walletAddress);
-    const userATA   = await getAssociatedTokenAddress(MINT, user);        // PDA
-    const feeATA    = await getAssociatedTokenAddress(MINT, FEE_WALLET);  // PDA
+    const user    = new PublicKey(walletAddress);
+    const userATA = await getAssociatedTokenAddress(MINT, user);
+    const feeATA  = await getAssociatedTokenAddress(MINT, FEE_WALLET);
 
-    // 1. Ensure user has enough balance (100 tokens)
-    const mint      = await getMint(connection, MINT);
-    const decimals  = mint.decimals;
-    const amount    = 100n * 10n ** BigInt(decimals);                     // BigInt u64
+    // convert human‑readable token amount → raw u64 units
+    const mintInfo = await getMint(connection, MINT);
+    const decimals = mintInfo.decimals;
+    const rawAmount = BigInt(Math.round(amount * 10 ** decimals));
 
-    const balRes    = await connection.getTokenAccountBalance(userATA);
-    if (BigInt(balRes.value.amount) < amount) {
+    // check balance
+    const bal = await connection.getTokenAccountBalance(userATA);
+    if (BigInt(bal.value.amount) < rawAmount) {
       return NextResponse.json({ error: "Insufficient token balance" }, { status: 402 });
     }
 
-    // 2. Build transaction
     const tx = new Transaction();
 
-    // (a)  create fee wallet ATA if it doesn’t exist
-    const feeInfo = await connection.getAccountInfo(feeATA);
-    if (!feeInfo) {
+    // create fee ATA if needed (payer = user)
+    if (!(await connection.getAccountInfo(feeATA))) {
       tx.add(
         createAssociatedTokenAccountInstruction(
-          user,          // payer (will sign)
+          user,        // payer & signer
           feeATA,
           FEE_WALLET,
           MINT
@@ -57,13 +54,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // (b)  transfer 100 tokens → fee wallet
-    tx.add(
-      createTransferInstruction(userATA, feeATA, user, amount)
-    );
+    // transfer dynamic amount
+    tx.add(createTransferInstruction(userATA, feeATA, user, rawAmount));
 
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-    tx.feePayer        = user;  // Phantom signs & pays
+    tx.feePayer = user;
 
     const base64Tx = tx.serialize({
       requireAllSignatures: false,
